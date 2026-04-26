@@ -2,6 +2,7 @@
   "name": "Mon Budget",
   "short_name": "Budget",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "display_override": ["standalone"],
   "background_color": "#0f172a",
