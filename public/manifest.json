@@ -1,12 +1,10 @@
 {
   "name": "Mon Budget",
   "short_name": "Budget",
-  "description": "Application personnelle de gestion de budget",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#020617",
+  "background_color": "#0f172a",
   "theme_color": "#38bdf8",
-  "orientation": "portrait",
   "icons": [
     {
       "src": "/icon-192.png",
