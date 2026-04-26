@@ -12,12 +12,12 @@ ReactDOM.createRoot(document.getElementById("root")).render(
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("/service-worker.js")
+      .register("/sw.js")
       .then(() => {
-        console.log("Service Worker activé");
+        console.log("Service worker actif");
       })
       .catch((error) => {
-        console.log("Erreur Service Worker :", error);
+        console.log("Erreur service worker :", error);
       });
   });
 }
