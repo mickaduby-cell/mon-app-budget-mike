@@ -1,675 +1,652 @@
-import { useState, useEffect } from "react";
-import "./index.css";
+import { useEffect, useMemo, useState } from 'react';
+import { createWorker } from 'tesseract.js';
+import './index.css';
+
+const defaultPaymentRefs = ['Courses', 'Essence', 'Crédit', 'Assurance', 'Loisirs'];
+const defaultIncomeRefs = ['Salaire', 'CAF', 'Remboursement', 'Vente', 'Autre'];
+
+function todayFr() {
+  return new Date().toLocaleDateString('fr-FR');
+}
+
+function isDebitPassed(day) {
+  return new Date().getDate() >= Number(day);
+}
+
+function downloadFile(filename, content, type) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 export default function App() {
-  const [view, setView] = useState("expenses");
+  const [transactions, setTransactions] = useState(() => JSON.parse(localStorage.getItem('transactions')) || []);
+  const [paymentRefs, setPaymentRefs] = useState(() => JSON.parse(localStorage.getItem('paymentRefs')) || defaultPaymentRefs);
+  const [incomeRefs, setIncomeRefs] = useState(() => JSON.parse(localStorage.getItem('incomeRefs')) || defaultIncomeRefs);
+  const [monthlyDebits, setMonthlyDebits] = useState(() => JSON.parse(localStorage.getItem('monthlyDebits')) || []);
+  const [budgets, setBudgets] = useState(() => JSON.parse(localStorage.getItem('budgets')) || []);
 
-  const [expenses, setExpenses] = useState([]);
-  const [planned, setPlanned] = useState([]);
-  const [budgets, setBudgets] = useState([]);
+  const [type, setType] = useState('paiement');
+  const [amount, setAmount] = useState('');
+  const [reference, setReference] = useState('');
+  const [date, setDate] = useState(todayFr());
 
-  const [editingExpenseId, setEditingExpenseId] = useState(null);
-  const [editingPlannedId, setEditingPlannedId] = useState(null);
-  const [editingBudgetId, setEditingBudgetId] = useState(null);
+  const [newPaymentRef, setNewPaymentRef] = useState('');
+  const [newIncomeRef, setNewIncomeRef] = useState('');
 
-  const [title, setTitle] = useState("");
-  const [amount, setAmount] = useState("");
-  const [category, setCategory] = useState("nourriture");
-  const [date, setDate] = useState("");
-  const [note, setNote] = useState("");
-  const [ticketImage, setTicketImage] = useState(null);
-  const [openedImage, setOpenedImage] = useState(null);
+  const [debitName, setDebitName] = useState('');
+  const [debitAmount, setDebitAmount] = useState('');
+  const [debitDay, setDebitDay] = useState('');
 
-  const [pTitle, setPTitle] = useState("");
-  const [pAmount, setPAmount] = useState("");
-  const [pDay, setPDay] = useState("");
+  const [budgetRef, setBudgetRef] = useState('');
+  const [budgetAmount, setBudgetAmount] = useState('');
 
-  const [budgetName, setBudgetName] = useState("");
-  const [budgetAmount, setBudgetAmount] = useState("");
-  const [budgetCategory, setBudgetCategory] = useState("nourriture");
+  const [receiptImage, setReceiptImage] = useState('');
+  const [receiptText, setReceiptText] = useState('');
+  const [isReadingReceipt, setIsReadingReceipt] = useState(false);
 
-  const [search, setSearch] = useState("");
-  const [filterCategory, setFilterCategory] = useState("all");
-  const [filterType, setFilterType] = useState("all");
+  useEffect(() => localStorage.setItem('transactions', JSON.stringify(transactions)), [transactions]);
+  useEffect(() => localStorage.setItem('paymentRefs', JSON.stringify(paymentRefs)), [paymentRefs]);
+  useEffect(() => localStorage.setItem('incomeRefs', JSON.stringify(incomeRefs)), [incomeRefs]);
+  useEffect(() => localStorage.setItem('monthlyDebits', JSON.stringify(monthlyDebits)), [monthlyDebits]);
+  useEffect(() => localStorage.setItem('budgets', JSON.stringify(budgets)), [budgets]);
 
-  const categories = ["nourriture", "transport", "logement", "loisirs", "crédit"];
+  const sortedMonthlyDebits = [...monthlyDebits].sort((a, b) => Number(a.day) - Number(b.day));
 
-  useEffect(() => {
-    const e = localStorage.getItem("expenses");
-    const p = localStorage.getItem("planned");
-    const b = localStorage.getItem("budgets");
+  const totalIncome = transactions
+    .filter((t) => t.type === 'revenu')
+    .reduce((sum, t) => sum + Number(t.amount), 0);
 
-    if (e) setExpenses(JSON.parse(e));
-    if (p) setPlanned(JSON.parse(p));
-    if (b) setBudgets(JSON.parse(b));
-  }, []);
+  const totalPayment = transactions
+    .filter((t) => t.type === 'paiement')
+    .reduce((sum, t) => sum + Number(t.amount), 0);
 
-  useEffect(() => {
-    localStorage.setItem("expenses", JSON.stringify(expenses));
-  }, [expenses]);
+  const passedDebits = monthlyDebits.filter((d) => isDebitPassed(d.day));
 
-  useEffect(() => {
-    localStorage.setItem("planned", JSON.stringify(planned));
-  }, [planned]);
+  const totalPassedDebits = passedDebits.reduce(
+    (sum, d) => sum + Number(d.amount),
+    0
+  );
 
-  useEffect(() => {
-    localStorage.setItem("budgets", JSON.stringify(budgets));
-  }, [budgets]);
+  const realBalance = totalIncome - totalPayment;
+  const displayedBalance = realBalance - totalPassedDebits;
 
-  const formatDate = (value) => {
-    if (!value) return "";
-    return value.split("-").reverse().join("-");
-  };
+  const refsToUse = type === 'paiement' ? paymentRefs : incomeRefs;
 
-  const handleTicketUpload = (e) => {
+  const budgetAlerts = useMemo(() => {
+    return budgets
+      .map((budget) => {
+        const spent = transactions
+          .filter((t) => t.type === 'paiement' && t.reference === budget.ref)
+          .reduce((sum, t) => sum + Number(t.amount), 0);
+
+        const percent = (spent / Number(budget.amount)) * 100;
+
+        return { ...budget, spent, percent };
+      })
+      .filter((b) => b.percent >= 80);
+  }, [budgets, transactions]);
+
+  function addTransaction(e) {
+    e.preventDefault();
+
+    if (!amount || !reference || !date) return;
+
+    const newTransaction = {
+      id: Date.now(),
+      type,
+      amount: Number(amount),
+      reference,
+      date,
+      receiptImage,
+    };
+
+    setTransactions([newTransaction, ...transactions]);
+
+    setAmount('');
+    setReference('');
+    setDate(todayFr());
+    setReceiptImage('');
+    setReceiptText('');
+  }
+
+  function deleteTransaction(id) {
+    setTransactions(transactions.filter((t) => t.id !== id));
+  }
+
+  function addPaymentRef() {
+    const value = newPaymentRef.trim();
+    if (value && !paymentRefs.includes(value)) {
+      setPaymentRefs([...paymentRefs, value]);
+    }
+    setNewPaymentRef('');
+  }
+
+  function addIncomeRef() {
+    const value = newIncomeRef.trim();
+    if (value && !incomeRefs.includes(value)) {
+      setIncomeRefs([...incomeRefs, value]);
+    }
+    setNewIncomeRef('');
+  }
+
+  function addMonthlyDebit(e) {
+    e.preventDefault();
+
+    if (!debitName || !debitAmount || !debitDay) return;
+    if (Number(debitDay) < 1 || Number(debitDay) > 31) return;
+
+    const newDebit = {
+      id: Date.now(),
+      name: debitName,
+      amount: Number(debitAmount),
+      day: Number(debitDay),
+    };
+
+    setMonthlyDebits([...monthlyDebits, newDebit]);
+
+    setDebitName('');
+    setDebitAmount('');
+    setDebitDay('');
+  }
+
+  function addBudget(e) {
+    e.preventDefault();
+
+    if (!budgetRef || !budgetAmount) return;
+
+    const existing = budgets.find((b) => b.ref === budgetRef);
+
+    if (existing) {
+      setBudgets(
+        budgets.map((b) =>
+          b.ref === budgetRef ? { ...b, amount: Number(budgetAmount) } : b
+        )
+      );
+    } else {
+      setBudgets([
+        ...budgets,
+        {
+          id: Date.now(),
+          ref: budgetRef,
+          amount: Number(budgetAmount),
+        },
+      ]);
+    }
+
+    setBudgetRef('');
+    setBudgetAmount('');
+  }
+
+  function handleReceiptPhoto(e) {
     const file = e.target.files[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onloadend = () => setTicketImage(reader.result);
+
+    reader.onload = () => {
+      setReceiptImage(reader.result);
+      setReceiptText('');
+    };
+
     reader.readAsDataURL(file);
-  };
+  }
 
-  const quickCategory = (cat) => {
-    setCategory(cat);
-  };
+  function extractReceiptData(text) {
+    const lower = text.toLowerCase();
 
-  const resetExpenseForm = () => {
-    setTitle("");
-    setAmount("");
-    setCategory("nourriture");
-    setDate("");
-    setNote("");
-    setTicketImage(null);
-    setEditingExpenseId(null);
-  };
+    const amounts = [...text.matchAll(/(\d+[,.]\d{2})/g)]
+      .map((match) => Number(match[1].replace(',', '.')))
+      .filter((number) => !isNaN(number));
 
-  const handleAddOrUpdateExpense = () => {
-    if (!title || !amount || !date) return;
+    const foundAmount = amounts.length ? Math.max(...amounts) : '';
 
-    if (editingExpenseId) {
-      setExpenses(
-        expenses.map((e) =>
-          e.id === editingExpenseId
-            ? {
-                ...e,
-                title,
-                amount: parseFloat(amount),
-                category,
-                date,
-                note,
-                ticketImage,
-              }
-            : e
-        )
-      );
-    } else {
-      const newExpense = {
-        id: Date.now(),
-        title,
-        amount: parseFloat(amount),
-        category,
-        date,
-        note,
-        ticketImage,
-      };
+    const dateMatch = text.match(/(\d{2}[\/.-]\d{2}[\/.-]\d{2,4})/);
 
-      setExpenses([newExpense, ...expenses]);
+    const foundDate = dateMatch
+      ? dateMatch[1].replaceAll('-', '/').replaceAll('.', '/')
+      : todayFr();
+
+    let foundRef = 'Courses';
+
+    if (lower.includes('carburant') || lower.includes('gazole') || lower.includes('essence')) {
+      foundRef = 'Essence';
+    } else if (lower.includes('pharmacie')) {
+      foundRef = 'Santé';
+    } else if (lower.includes('restaurant') || lower.includes('burger') || lower.includes('pizza')) {
+      foundRef = 'Restaurant';
+    } else if (lower.includes('brico') || lower.includes('leroy') || lower.includes('castorama')) {
+      foundRef = 'Bricolage';
     }
 
-    resetExpenseForm();
-  };
-
-  const startEditExpense = (expense) => {
-    setEditingExpenseId(expense.id);
-    setTitle(expense.title);
-    setAmount(expense.amount);
-    setCategory(expense.category);
-    setDate(expense.date);
-    setNote(expense.note || "");
-    setTicketImage(expense.ticketImage || null);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  };
-
-  const deleteExpense = (id) => {
-    setExpenses(expenses.filter((e) => e.id !== id));
-  };
-
-  const resetPlannedForm = () => {
-    setPTitle("");
-    setPAmount("");
-    setPDay("");
-    setEditingPlannedId(null);
-  };
-
-  const handleAddOrUpdatePlanned = () => {
-    if (!pTitle || !pAmount || !pDay) return;
-
-    const dayNumber = parseInt(pDay);
-    if (dayNumber < 1 || dayNumber > 31) return;
-
-    if (editingPlannedId) {
-      setPlanned(
-        planned
-          .map((p) =>
-            p.id === editingPlannedId
-              ? {
-                  ...p,
-                  title: pTitle,
-                  amount: parseFloat(pAmount),
-                  day: dayNumber,
-                }
-              : p
-          )
-          .sort((a, b) => a.day - b.day)
-      );
-    } else {
-      const newPlanned = {
-        id: Date.now(),
-        title: pTitle,
-        amount: parseFloat(pAmount),
-        day: dayNumber,
-        paid: false,
-      };
-
-      setPlanned([...planned, newPlanned].sort((a, b) => a.day - b.day));
+    if (!paymentRefs.includes(foundRef)) {
+      setPaymentRefs([...paymentRefs, foundRef]);
     }
 
-    resetPlannedForm();
-  };
+    setType('paiement');
+    setAmount(foundAmount);
+    setReference(foundRef);
+    setDate(foundDate);
+  }
 
-  const startEditPlanned = (item) => {
-    setEditingPlannedId(item.id);
-    setPTitle(item.title);
-    setPAmount(item.amount);
-    setPDay(item.day);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  };
+  async function analyzeReceipt() {
+    if (!receiptImage) return;
 
-  const togglePaid = (id) => {
-    setPlanned(
-      planned.map((p) => (p.id === id ? { ...p, paid: !p.paid } : p))
+    setIsReadingReceipt(true);
+
+    try {
+      const worker = await createWorker('fra');
+      const result = await worker.recognize(receiptImage);
+      await worker.terminate();
+
+      const text = result.data.text;
+
+      setReceiptText(text);
+      extractReceiptData(text);
+    } catch (error) {
+      alert('Impossible de lire le ticket. Essaie avec une photo plus nette.');
+    }
+
+    setIsReadingReceipt(false);
+  }
+
+  function exportJson() {
+    const data = {
+      transactions,
+      paymentRefs,
+      incomeRefs,
+      monthlyDebits,
+      budgets,
+    };
+
+    downloadFile(
+      'mon-budget-sauvegarde.json',
+      JSON.stringify(data, null, 2),
+      'application/json'
     );
-  };
+  }
 
-  const deletePlanned = (id) => {
-    setPlanned(planned.filter((p) => p.id !== id));
-  };
+  function exportCsv() {
+    const header = 'type;reference;montant;date\n';
 
-  const resetMonth = () => {
-    setPlanned(planned.map((p) => ({ ...p, paid: false })));
-  };
+    const rows = transactions
+      .map((t) => `${t.type};${t.reference};${t.amount};${t.date}`)
+      .join('\n');
 
-  const resetBudgetForm = () => {
-    setBudgetName("");
-    setBudgetAmount("");
-    setBudgetCategory("nourriture");
-    setEditingBudgetId(null);
-  };
-
-  const handleAddOrUpdateBudget = () => {
-    if (!budgetName || !budgetAmount || !budgetCategory) return;
-
-    if (editingBudgetId) {
-      setBudgets(
-        budgets.map((b) =>
-          b.id === editingBudgetId
-            ? {
-                ...b,
-                name: budgetName,
-                amount: parseFloat(budgetAmount),
-                category: budgetCategory,
-              }
-            : b
-        )
-      );
-    } else {
-      const newBudget = {
-        id: Date.now(),
-        name: budgetName,
-        amount: parseFloat(budgetAmount),
-        category: budgetCategory,
-      };
-
-      setBudgets([newBudget, ...budgets]);
-    }
-
-    resetBudgetForm();
-  };
-
-  const startEditBudget = (budget) => {
-    setEditingBudgetId(budget.id);
-    setBudgetName(budget.name);
-    setBudgetAmount(budget.amount);
-    setBudgetCategory(budget.category);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  };
-
-  const deleteBudget = (id) => {
-    setBudgets(budgets.filter((b) => b.id !== id));
-  };
-
-  const upcoming = planned.filter((p) => !p.paid);
-  const paid = planned.filter((p) => p.paid);
-
-  const totalExpenses = expenses
-    .filter((e) => e.category !== "revenu")
-    .reduce((a, b) => a + b.amount, 0);
-
-  const totalIncome = expenses
-    .filter((e) => e.category === "revenu")
-    .reduce((a, b) => a + b.amount, 0);
-
-  const balance = totalIncome - totalExpenses;
-  const totalPlanned = upcoming.reduce((a, b) => a + b.amount, 0);
-
-  const expenseCategories = expenses.filter((e) => e.category !== "revenu");
-
-  const categoryTotals = expenseCategories.reduce((acc, item) => {
-    acc[item.category] = (acc[item.category] || 0) + item.amount;
-    return acc;
-  }, {});
-
-  const chartData = Object.entries(categoryTotals)
-    .map(([name, value]) => ({ name, value }))
-    .sort((a, b) => b.value - a.value);
-
-  const maxCategoryAmount =
-    chartData.length > 0 ? Math.max(...chartData.map((item) => item.value)) : 0;
-
-  const filteredExpenses = expenses.filter((e) => {
-    const matchSearch = e.title.toLowerCase().includes(search.toLowerCase());
-
-    const matchCategory =
-      filterCategory === "all" || e.category === filterCategory;
-
-    const matchType =
-      filterType === "all" ||
-      (filterType === "income" && e.category === "revenu") ||
-      (filterType === "expense" && e.category !== "revenu");
-
-    return matchSearch && matchCategory && matchType;
-  });
+    downloadFile('mon-budget-transactions.csv', header + rows, 'text/csv');
+  }
 
   return (
-    <div className="container">
-      <h1>💰 MON BUDGET</h1>
+    <div className="app">
+      <h1>Mon Budget</h1>
 
-      <div className="tabs">
-        <button onClick={() => setView("expenses")}>Dépenses / Revenus</button>
-        <button onClick={() => setView("planned")}>Prélèvements</button>
-        <button onClick={() => setView("budgets")}>Budgets</button>
+      <div className="summary">
+        <div>
+          <span>Revenus</span>
+          <strong className="income">{totalIncome.toFixed(2)} €</strong>
+        </div>
+
+        <div>
+          <span>Paiements</span>
+          <strong className="payment">{totalPayment.toFixed(2)} €</strong>
+        </div>
+
+        <div>
+          <span>Prélèvements passés</span>
+          <strong className="payment">-{totalPassedDebits.toFixed(2)} €</strong>
+        </div>
+
+        <div className="big-balance">
+          <span>Solde affiché</span>
+          <strong className={displayedBalance >= 0 ? 'income' : 'payment'}>
+            {displayedBalance.toFixed(2)} €
+          </strong>
+        </div>
       </div>
 
-      {view === "expenses" && (
-        <>
-          <div className="form">
+      <div className="notifications">
+        <h2>Notifications</h2>
+
+        {passedDebits.length === 0 && budgetAlerts.length === 0 && (
+          <p>Aucune alerte pour le moment.</p>
+        )}
+
+        {passedDebits.map((debit) => (
+          <div className="alert debit-alert" key={debit.id}>
+            Prélèvement passé : <strong>{debit.name}</strong> -{' '}
+            {Number(debit.amount).toFixed(2)} €
+          </div>
+        ))}
+
+        {budgetAlerts.map((budget) => (
+          <div className="alert budget-alert" key={budget.id}>
+            Budget presque dépassé : <strong>{budget.ref}</strong> —{' '}
+            {budget.spent.toFixed(2)} € / {Number(budget.amount).toFixed(2)} €
+          </div>
+        ))}
+      </div>
+
+      <form className="card" onSubmit={addTransaction}>
+        <h2>Ajouter une opération</h2>
+
+        <select
+          value={type}
+          onChange={(e) => {
+            setType(e.target.value);
+            setReference('');
+          }}
+        >
+          <option value="paiement">Paiement</option>
+          <option value="revenu">Revenu</option>
+        </select>
+
+        <input
+          type="number"
+          placeholder="Montant"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+        />
+
+        <select value={reference} onChange={(e) => setReference(e.target.value)}>
+          <option value="">
+            {type === 'paiement' ? 'Ajouter une dépense...' : 'Ajouter un revenu...'}
+          </option>
+
+          {refsToUse.map((ref) => (
+            <option key={ref} value={ref}>
+              {ref}
+            </option>
+          ))}
+        </select>
+
+        <input
+          type="text"
+          placeholder="JJ/MM/AAAA"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+        />
+
+        <div className="receipt-box">
+          <h3>Photo ticket de caisse</h3>
+
+          <label className="receipt-upload-label">
+            📸 Prendre une photo du ticket
             <input
-              placeholder="Titre"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              className="receipt-file-input"
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={handleReceiptPhoto}
             />
+          </label>
 
-            <input
-              type="number"
-              placeholder="Montant"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-            />
+          {receiptImage && (
+            <>
+              <img
+                src={receiptImage}
+                alt="Ticket de caisse"
+                className="receipt-preview"
+              />
 
-            <select value={category} onChange={(e) => setCategory(e.target.value)}>
-              <option>nourriture</option>
-              <option>transport</option>
-              <option>logement</option>
-              <option>loisirs</option>
-              <option>crédit</option>
-              <option>revenu</option>
-            </select>
+              <button
+                type="button"
+                onClick={analyzeReceipt}
+                disabled={isReadingReceipt}
+              >
+                {isReadingReceipt ? 'Lecture du ticket...' : 'Analyser le ticket'}
+              </button>
+            </>
+          )}
 
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          {receiptText && (
+            <p className="receipt-result">
+              Ticket lu. Vérifie le montant avant d’ajouter.
+            </p>
+          )}
+        </div>
 
-            <input
-              placeholder="Note optionnelle"
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-            />
+        <button type="submit">Ajouter</button>
+      </form>
 
-            <label className="fileLabel">
-              📸 Ajouter / changer ticket
-              <input type="file" accept="image/*" onChange={handleTicketUpload} />
-            </label>
+      <div className="card">
+        <h2>Prélèvements mensuels</h2>
 
-            {ticketImage && (
-              <div className="ticketPreview">
-                <img src={ticketImage} alt="Aperçu ticket" />
-                <span>Ticket ajouté ✅</span>
+        <form onSubmit={addMonthlyDebit}>
+          <input
+            placeholder="Nom du prélèvement"
+            value={debitName}
+            onChange={(e) => setDebitName(e.target.value)}
+          />
+
+          <input
+            type="number"
+            placeholder="Montant"
+            value={debitAmount}
+            onChange={(e) => setDebitAmount(e.target.value)}
+          />
+
+          <input
+            type="number"
+            placeholder="Jour du mois"
+            value={debitDay}
+            onChange={(e) => setDebitDay(e.target.value)}
+          />
+
+          <button type="submit">Ajouter le prélèvement</button>
+        </form>
+
+        <div className="debit-list">
+          {sortedMonthlyDebits.length === 0 ? (
+            <p>Aucun prélèvement mensuel.</p>
+          ) : (
+            sortedMonthlyDebits.map((debit) => (
+              <div
+                className={isDebitPassed(debit.day) ? 'debit passed' : 'debit'}
+                key={debit.id}
+              >
+                <div className="debit-day">{debit.day}</div>
+
+                <div className="debit-info">
+                  <strong>{debit.name}</strong>
+                  <small>Chaque mois</small>
+                </div>
+
+                <span>-{Number(debit.amount).toFixed(2)} €</span>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setMonthlyDebits(
+                      monthlyDebits.filter((item) => item.id !== debit.id)
+                    )
+                  }
+                >
+                  ×
+                </button>
               </div>
-            )}
+            ))
+          )}
+        </div>
+      </div>
 
-            <div className="quickButtons">
-              <button type="button" onClick={() => quickCategory("nourriture")}>
-                🍔 Nourriture
-              </button>
-              <button type="button" onClick={() => quickCategory("transport")}>
-                ⛽ Transport
-              </button>
-              <button type="button" onClick={() => quickCategory("logement")}>
-                🏠 Logement
-              </button>
-              <button type="button" onClick={() => quickCategory("loisirs")}>
-                🎮 Loisirs
-              </button>
-              <button type="button" onClick={() => quickCategory("crédit")}>
-                💳 Crédit
+      <div className="card">
+        <h2>Budgets par référence</h2>
+
+        <form onSubmit={addBudget}>
+          <select
+            value={budgetRef}
+            onChange={(e) => setBudgetRef(e.target.value)}
+          >
+            <option value="">Choisir une dépense...</option>
+
+            {paymentRefs.map((ref) => (
+              <option key={ref} value={ref}>
+                {ref}
+              </option>
+            ))}
+          </select>
+
+          <input
+            type="number"
+            placeholder="Budget max"
+            value={budgetAmount}
+            onChange={(e) => setBudgetAmount(e.target.value)}
+          />
+
+          <button type="submit">Ajouter / modifier budget</button>
+        </form>
+
+        {budgets.map((budget) => {
+          const spent = transactions
+            .filter(
+              (transaction) =>
+                transaction.type === 'paiement' &&
+                transaction.reference === budget.ref
+            )
+            .reduce((sum, transaction) => sum + Number(transaction.amount), 0);
+
+          const percent = Math.min(
+            (spent / Number(budget.amount)) * 100,
+            100
+          );
+
+          return (
+            <div className="budget-row" key={budget.id}>
+              <div>
+                <strong>{budget.ref}</strong>
+                <small>
+                  {spent.toFixed(2)} € / {Number(budget.amount).toFixed(2)} €
+                </small>
+
+                <div className="bar">
+                  <div style={{ width: `${percent}%` }}></div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() =>
+                  setBudgets(budgets.filter((item) => item.id !== budget.id))
+                }
+              >
+                Supprimer
               </button>
             </div>
+          );
+        })}
+      </div>
 
-            <button onClick={handleAddOrUpdateExpense}>
-              {editingExpenseId ? "Modifier la dépense" : "Ajouter"}
-            </button>
+      <div className="card">
+        <h2>Sauvegarde / Export</h2>
+        <button type="button" onClick={exportJson}>
+          Exporter sauvegarde complète
+        </button>
+        <button type="button" onClick={exportCsv}>
+          Exporter transactions CSV
+        </button>
+      </div>
 
-            {editingExpenseId && (
-              <button className="danger" onClick={resetExpenseForm}>
-                Annuler modification
-              </button>
-            )}
-          </div>
+      <div className="card">
+        <h2>Mes références</h2>
 
-          <div className="dashboard">
-            <p className="red">Paiements : {totalExpenses.toFixed(2)} €</p>
-            <p className="green">Entrées : {totalIncome.toFixed(2)} €</p>
-            <p className={`balance ${balance >= 0 ? "positive" : "negative"}`}>
-              Solde : {balance > 0 ? "+" : ""}
-              {balance.toFixed(2)} €
-            </p>
-          </div>
+        <h3>Paiements</h3>
 
-          <div className="chartBox">
-            <h2>📊 Dépenses par catégorie</h2>
+        <div className="ref-add">
+          <input
+            placeholder="Nouvelle référence paiement"
+            value={newPaymentRef}
+            onChange={(e) => setNewPaymentRef(e.target.value)}
+          />
 
-            {chartData.length === 0 ? (
-              <p className="emptyText">Aucune dépense pour le moment.</p>
-            ) : (
-              <div className="chartList">
-                {chartData.map((item) => (
-                  <div key={item.name} className="chartRow">
-                    <div className="chartInfo">
-                      <span>{item.name}</span>
-                      <strong>{item.value.toFixed(2)} €</strong>
-                    </div>
-
-                    <div className="barBackground">
-                      <div
-                        className="barFill"
-                        style={{ width: `${(item.value / maxCategoryAmount) * 100}%` }}
-                      ></div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="filters">
-            <input
-              placeholder="🔎 Rechercher une dépense..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-
-            <select
-              value={filterCategory}
-              onChange={(e) => setFilterCategory(e.target.value)}
-            >
-              <option value="all">Toutes catégories</option>
-              <option value="nourriture">Nourriture</option>
-              <option value="transport">Transport</option>
-              <option value="logement">Logement</option>
-              <option value="loisirs">Loisirs</option>
-              <option value="crédit">Crédit</option>
-              <option value="revenu">Revenu</option>
-            </select>
-
-            <select value={filterType} onChange={(e) => setFilterType(e.target.value)}>
-              <option value="all">Tout</option>
-              <option value="expense">Paiements</option>
-              <option value="income">Entrées</option>
-            </select>
-          </div>
-
-          <div className="list">
-            {filteredExpenses.map((e) => (
-              <div
-                key={e.id}
-                className={`card ${e.category === "revenu" ? "income" : "expense"}`}
-              >
-                <h3>{e.title}</h3>
-                <p>{e.amount.toFixed(2)} €</p>
-                <p>{e.category}</p>
-                <p>{formatDate(e.date)}</p>
-
-                {e.note && <p className="noteBox">📝 {e.note}</p>}
-
-                {e.ticketImage && (
-                  <div className="ticketThumb" onClick={() => setOpenedImage(e.ticketImage)}>
-                    <img src={e.ticketImage} alt="Ticket de caisse" />
-                    <span>Voir ticket</span>
-                  </div>
-                )}
-
-                <div className="actions">
-                  <button onClick={() => startEditExpense(e)}>Modifier</button>
-                  <button className="danger" onClick={() => deleteExpense(e.id)}>
-                    Supprimer
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-
-      {view === "planned" && (
-        <>
-          <div className="form">
-            <input
-              placeholder="Nom prélèvement"
-              value={pTitle}
-              onChange={(e) => setPTitle(e.target.value)}
-            />
-
-            <input
-              type="number"
-              placeholder="Montant"
-              value={pAmount}
-              onChange={(e) => setPAmount(e.target.value)}
-            />
-
-            <input
-              type="number"
-              placeholder="Jour du mois 1-31"
-              value={pDay}
-              onChange={(e) => setPDay(e.target.value)}
-            />
-
-            <button onClick={handleAddOrUpdatePlanned}>
-              {editingPlannedId ? "Modifier le prélèvement" : "Ajouter"}
-            </button>
-
-            {editingPlannedId && (
-              <button className="danger" onClick={resetPlannedForm}>
-                Annuler modification
-              </button>
-            )}
-          </div>
-
-          <div className="dashboard">
-            <p className="red">Reste à prélever : {totalPlanned.toFixed(2)} €</p>
-            <button onClick={resetMonth}>🔄 Nouveau mois</button>
-          </div>
-
-          <h2>⏳ À venir</h2>
-
-          <div className="list">
-            {upcoming.map((p) => (
-              <div key={p.id} className="card expense">
-                <h3>{p.title}</h3>
-                <p>{p.amount.toFixed(2)} €</p>
-                <p>Jour {p.day}</p>
-
-                <div className="actions">
-                  <button onClick={() => togglePaid(p.id)}>Marquer payé</button>
-                  <button onClick={() => startEditPlanned(p)}>Modifier</button>
-                  <button className="danger" onClick={() => deletePlanned(p.id)}>
-                    Supprimer
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <h2>✅ Payé</h2>
-
-          <div className="list">
-            {paid.map((p) => (
-              <div key={p.id} className="card paid">
-                <h3>{p.title}</h3>
-                <p>{p.amount.toFixed(2)} €</p>
-                <p>Jour {p.day}</p>
-
-                <div className="actions">
-                  <button onClick={() => togglePaid(p.id)}>Annuler</button>
-                  <button onClick={() => startEditPlanned(p)}>Modifier</button>
-                  <button className="danger" onClick={() => deletePlanned(p.id)}>
-                    Supprimer
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-
-      {view === "budgets" && (
-        <>
-          <div className="form">
-            <input
-              placeholder="Nom de la jauge : Courses, Essence..."
-              value={budgetName}
-              onChange={(e) => setBudgetName(e.target.value)}
-            />
-
-            <input
-              type="number"
-              placeholder="Budget mensuel"
-              value={budgetAmount}
-              onChange={(e) => setBudgetAmount(e.target.value)}
-            />
-
-            <select value={budgetCategory} onChange={(e) => setBudgetCategory(e.target.value)}>
-              {categories.map((cat) => (
-                <option key={cat}>{cat}</option>
-              ))}
-            </select>
-
-            <button onClick={handleAddOrUpdateBudget}>
-              {editingBudgetId ? "Modifier la jauge" : "Créer la jauge"}
-            </button>
-
-            {editingBudgetId && (
-              <button className="danger" onClick={resetBudgetForm}>
-                Annuler modification
-              </button>
-            )}
-          </div>
-
-          <div className="budgetList">
-            {budgets.map((budget) => {
-              const spent = expenses
-                .filter((e) => e.category === budget.category)
-                .reduce((acc, e) => acc + e.amount, 0);
-
-              const remaining = budget.amount - spent;
-              const percentUsed = Math.min((spent / budget.amount) * 100, 100);
-              const percentRemaining = Math.max(100 - percentUsed, 0);
-
-              let gaugeClass = "safe";
-              let alertText = "";
-
-              if (percentRemaining <= 50) {
-                gaugeClass = "warning";
-                alertText = "⚠️ Attention, budget déjà bien entamé";
-              }
-
-              if (percentRemaining <= 20) {
-                gaugeClass = "dangerGauge";
-                alertText = "🚨 Budget presque vide";
-              }
-
-              if (percentRemaining <= 0) {
-                alertText = "❌ Budget dépassé";
-              }
-
-              return (
-                <div key={budget.id} className="budgetCard">
-                  <div className="budgetHeader">
-                    <div>
-                      <h3>{budget.name}</h3>
-                      <p>Lié à : {budget.category}</p>
-                    </div>
-                  </div>
-
-                  <div className="budgetNumbers">
-                    <span>Budget : {budget.amount.toFixed(2)} €</span>
-                    <span>Dépensé : {spent.toFixed(2)} €</span>
-                    <span className={remaining >= 0 ? "green" : "red"}>
-                      Restant : {remaining.toFixed(2)} €
-                    </span>
-                  </div>
-
-                  <div className={`gauge ${gaugeClass}`}>
-                    <div className="gaugeFill" style={{ width: `${percentRemaining}%` }}></div>
-
-                    <div className="weekMarks">
-                      <span></span>
-                      <span></span>
-                      <span></span>
-                      <span></span>
-                    </div>
-                  </div>
-
-                  {alertText && <p className="alertText">{alertText}</p>}
-
-                  <div className="weekLabels">
-                    <span>S1</span>
-                    <span>S2</span>
-                    <span>S3</span>
-                    <span>S4</span>
-                  </div>
-
-                  <div className="actions">
-                    <button onClick={() => startEditBudget(budget)}>Modifier</button>
-                    <button className="danger" onClick={() => deleteBudget(budget.id)}>
-                      Supprimer
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </>
-      )}
-
-      {openedImage && (
-        <div className="imageModal" onClick={() => setOpenedImage(null)}>
-          <div className="imageModalContent" onClick={(e) => e.stopPropagation()}>
-            <button className="closeModal" onClick={() => setOpenedImage(null)}>
-              Fermer
-            </button>
-            <img src={openedImage} alt="Ticket agrandi" />
-          </div>
+          <button type="button" onClick={addPaymentRef}>
+            Ajouter
+          </button>
         </div>
-      )}
+
+        <div className="refs">
+          {paymentRefs.map((ref) => (
+            <span key={ref}>
+              {ref}
+              <button
+                type="button"
+                onClick={() =>
+                  setPaymentRefs(paymentRefs.filter((item) => item !== ref))
+                }
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+
+        <h3>Revenus</h3>
+
+        <div className="ref-add">
+          <input
+            placeholder="Nouvelle référence revenu"
+            value={newIncomeRef}
+            onChange={(e) => setNewIncomeRef(e.target.value)}
+          />
+
+          <button type="button" onClick={addIncomeRef}>
+            Ajouter
+          </button>
+        </div>
+
+        <div className="refs">
+          {incomeRefs.map((ref) => (
+            <span key={ref}>
+              {ref}
+              <button
+                type="button"
+                onClick={() =>
+                  setIncomeRefs(incomeRefs.filter((item) => item !== ref))
+                }
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="card">
+        <h2>Historique</h2>
+
+        {transactions.length === 0 ? (
+          <p>Aucune opération.</p>
+        ) : (
+          transactions.map((transaction) => (
+            <div className="transaction" key={transaction.id}>
+              <div>
+                <strong>{transaction.reference}</strong>
+                <small>{transaction.date}</small>
+                {transaction.receiptImage && <small>Ticket enregistré</small>}
+              </div>
+
+              <span
+                className={
+                  transaction.type === 'revenu' ? 'income' : 'payment'
+                }
+              >
+                {transaction.type === 'revenu' ? '+' : '-'}
+                {Number(transaction.amount).toFixed(2)} €
+              </span>
+
+              <button
+                type="button"
+                onClick={() => deleteTransaction(transaction.id)}
+              >
+                Supprimer
+              </button>
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 }
