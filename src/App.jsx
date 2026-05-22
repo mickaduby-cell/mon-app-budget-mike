@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react';
-import { createWorker } from 'tesseract.js';
 import './index.css';
 
 const defaultPaymentRefs = ['Courses', 'Essence', 'Crédit', 'Assurance', 'Loisirs'];
